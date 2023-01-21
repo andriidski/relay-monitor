@@ -181,3 +181,17 @@ func (store *PostgresStore) GetLatestValidatorRegistration(ctx context.Context, 
 
 	return types.ValidatorRegistrationEntryToSignedValidatorRegistration(entry)
 }
+
+func (store *PostgresStore) GetCountValidatorsRegistrations(ctx context.Context) (count uint, err error) {
+	query := `SELECT COUNT(*) FROM ` + TableValidatorRegistration + `;`
+	row := store.DB.QueryRow(query)
+	err = row.Scan(&count)
+	return count, err
+}
+
+func (store *PostgresStore) GetCountValidators(ctx context.Context) (count uint, err error) {
+	query := `SELECT COUNT(*) FROM (SELECT DISTINCT pubkey FROM ` + TableValidatorRegistration + `) AS temp;`
+	row := store.DB.QueryRow(query)
+	err = row.Scan(&count)
+	return count, err
+}
