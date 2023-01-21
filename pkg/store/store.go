@@ -18,4 +18,8 @@ type Storer interface {
 	GetValidatorRegistrations(context.Context, *types.PublicKey) ([]*types.SignedValidatorRegistration, error)
 	// `GetLatestValidatorRegistration` returns the latest known registration for the validator's public key.
 	GetLatestValidatorRegistration(context.Context, *types.PublicKey) (*types.SignedValidatorRegistration, error)
+	// `GetCountValidatorsRegistrations`returns the total number of valid registrations processed.
+	GetCountValidatorsRegistrations(ctx context.Context) (uint, error)
+	// `GetCountValidators`returns the number of validators that have successfully submitted at least one registration.
+	GetCountValidators(ctx context.Context) (uint, error)
 }

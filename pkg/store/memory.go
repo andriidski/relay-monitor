@@ -64,3 +64,15 @@ func (s *MemoryStore) GetLatestValidatorRegistration(ctx context.Context, public
 		return currentRegistration, nil
 	}
 }
+
+func (s *MemoryStore) GetCountValidatorsRegistrations(ctx context.Context) (uint, error) {
+	var totalRegistrations uint
+	for _, signedRegistrations := range s.registrations {
+		totalRegistrations += uint(len(signedRegistrations))
+	}
+	return totalRegistrations, nil
+}
+
+func (s *MemoryStore) GetCountValidators(ctx context.Context) (uint, error) {
+	return uint(len(s.registrations)), nil
+}
