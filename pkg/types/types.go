@@ -80,3 +80,36 @@ type AcceptanceEntry struct {
 
 	Signature string `db:"signature"`
 }
+
+type InvalidBid struct {
+	Category AnalysisCategory
+	Reason   string
+	Context  map[string]interface{}
+}
+
+type AnalysisEntry struct {
+	ID         int64     `db:"id"`
+	InsertedAt time.Time `db:"inserted_at"`
+
+	// Bid analysis "context" data
+	Slot           uint64 `db:"slot"`
+	ParentHash     string `db:"parent_hash"`
+	RelayPubkey    string `db:"relay_pubkey"`
+	ProposerPubkey string `db:"proposer_pubkey"`
+
+	Category AnalysisCategory `db:"category"`
+	Reason   string           `db:"reason"`
+}
+
+type AnalysisCategory uint
+
+const (
+	ValidBidCategory AnalysisCategory = iota
+	InvalidBidConsensusCategory
+	InvalidBidIgnoredPreferencesCategory
+)
+
+type AnalysisQueryFilter struct {
+	Category   AnalysisCategory
+	Comparator string
+}

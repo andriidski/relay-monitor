@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/ralexstokes/relay-monitor/pkg/types"
 )
@@ -22,4 +23,26 @@ type Storer interface {
 	GetCountValidatorsRegistrations(ctx context.Context) (uint, error)
 	// `GetCountValidators`returns the number of validators that have successfully submitted at least one registration.
 	GetCountValidators(ctx context.Context) (uint, error)
+
+	// TODO: look to refactor the way analysis is stored by referencing the bid in TableBids
+	// with a foreing key / etc. in order to not store all 4 context fields that act as the
+	// unique ID, since this is way too much data duplication.
+	// Need to refactor Bid insert/fetch to return the ID.
+
+	// Something like this?
+	//
+	// -- reference to the bid entry
+	// bid_id                  bigint NOT NULL,
+
+	// CONSTRAINT fk_bid
+	// 		FOREIGN KEY(bid_id)
+	// 			REFERENCES ` + TableBids + `(id)
+	//
+	// For now use the bid context and do a JOIN on these with the Bids table if want more Bid data
+	// fields.
+	PutBidAnalysis(context.Context, *types.BidContext, *types.InvalidBid) error
+
+	// Stats getters using analysis data.
+	GetCountAnalysisWithinSlots(ctx context.Context, slots uint64, filter *types.AnalysisQueryFilter) (uint64, error)
+	GetCountAnalysisWithinDuration(ctx context.Context, duration time.Duration, filter *types.AnalysisQueryFilter) (uint64, error)
 }

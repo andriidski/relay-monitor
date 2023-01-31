@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	mev_boost_relay_types "github.com/flashbots/mev-boost-relay/database"
 	"github.com/flashbots/mev-boost-relay/database/vars"
@@ -19,6 +22,7 @@ type PostgresStore struct {
 
 	nstmtInsertBid        *sqlx.NamedStmt
 	nstmtInsertAcceptance *sqlx.NamedStmt
+	nstmtInsertAnalysis   *sqlx.NamedStmt
 
 	logger *zap.SugaredLogger
 }
@@ -62,6 +66,17 @@ func (store *PostgresStore) prepareNamedQueries() (err error) {
 	(:signed_blinded_beacon_block, :slot, :parent_hash, :relay_pubkey, :proposer_pubkey, :signature) 
 	RETURNING id`
 	store.nstmtInsertAcceptance, err = store.DB.PrepareNamed(query)
+	if err != nil {
+		return err
+	}
+
+	// Insert analysis (of the bid).
+	query = `INSERT INTO ` + TableBidsAnalysis + `
+	(slot, parent_hash, relay_pubkey, proposer_pubkey, category, reason) VALUES
+	(:slot, :parent_hash, :relay_pubkey, :proposer_pubkey, :category, :reason) 
+	RETURNING id`
+	store.nstmtInsertAnalysis, err = store.DB.PrepareNamed(query)
+
 	return err
 }
 
@@ -193,5 +208,52 @@ func (store *PostgresStore) GetCountValidators(ctx context.Context) (count uint,
 	query := `SELECT COUNT(*) FROM (SELECT DISTINCT pubkey FROM ` + TableValidatorRegistration + `) AS temp;`
 	row := store.DB.QueryRow(query)
 	err = row.Scan(&count)
+	return count, err
+}
+
+func (store *PostgresStore) PutBidAnalysis(ctx context.Context, bidCtx *types.BidContext, invalidBid *types.InvalidBid) error {
+	// Convert into a format that works better with the DB.
+	analysisEntry, err := types.InvalidBidToAnalysisEntry(bidCtx, invalidBid)
+	if err != nil {
+		return err
+	}
+
+	// Insert into DB.
+	err = store.nstmtInsertAnalysis.QueryRow(analysisEntry).Scan(&analysisEntry.ID)
+	if err != nil {
+		return err
+	}
+	store.logger.Info("saved analysis to db", zap.Uint64("slot", bidCtx.Slot), zap.String("parent_hash", bidCtx.ParentHash.String()))
+
+	return nil
+}
+
+func (store *PostgresStore) GetCountAnalysisWithinSlots(ctx context.Context, slots uint64, filter *types.AnalysisQueryFilter) (count uint64, err error) {
+	query := `SELECT COUNT(*) FROM ` + TableBidsAnalysis + `
+	WHERE slot >= (SELECT MAX(slot) - ` + strconv.FormatUint(slots, 10) + ` FROM ` + TableBidsAnalysis + `)`
+
+	// Add an optional category filter.
+	query = BuildCategoryFilterClause(query, filter)
+
+	row := store.DB.QueryRow(query)
+	err = row.Scan(&count)
+
+	store.logger.Infow("query executed: count analysis within slots", "query", query, "count", count)
+
+	return count, err
+}
+
+func (store *PostgresStore) GetCountAnalysisWithinDuration(ctx context.Context, duration time.Duration, filter *types.AnalysisQueryFilter) (count uint64, err error) {
+	query := `SELECT COUNT(*) FROM ` + TableBidsAnalysis + `
+	WHERE inserted_at >= NOW() - INTERVAL '` + fmt.Sprintf("%.0f minutes", duration.Minutes()) + `'`
+
+	// Add an optional category filter.
+	query = BuildCategoryFilterClause(query, filter)
+
+	row := store.DB.QueryRow(query)
+	err = row.Scan(&count)
+
+	store.logger.Infow("query executed: count analysis within duration", "query", query, "count", count)
+
 	return count, err
 }

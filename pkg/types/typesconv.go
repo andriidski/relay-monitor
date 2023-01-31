@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/flashbots/go-boost-utils/types"
 	mev_boost_relay_types "github.com/flashbots/mev-boost-relay/database"
@@ -94,4 +95,30 @@ func BidEntryToBid(bidEntry *BidEntry) (*Bid, error) {
 		Message:   builderBid,
 		Signature: signature,
 	}, nil
+}
+
+func InvalidBidToAnalysisEntry(bidCtx *BidContext, invalidBid *InvalidBid) (*AnalysisEntry, error) {
+	if bidCtx == nil {
+		return nil, fmt.Errorf("no bid context for analysis entry")
+	}
+
+	// Pre-fill analysis entry with context.
+	analysisEntry := &AnalysisEntry{
+		// Bid "context" data.
+		Slot:           bidCtx.Slot,
+		ParentHash:     bidCtx.ParentHash.String(),
+		RelayPubkey:    bidCtx.RelayPublicKey.String(),
+		ProposerPubkey: bidCtx.ProposerPublicKey.String(),
+	}
+
+	// If the 'invalidBid' is defined, then set the category and the reason, otherwise the bid
+	// must be valid so set the analysis category to reflect a valid bid status.
+	if invalidBid != nil {
+		analysisEntry.Category = invalidBid.Category
+		analysisEntry.Reason = invalidBid.Reason
+	} else {
+		analysisEntry.Category = ValidBidCategory
+	}
+
+	return analysisEntry, nil
 }

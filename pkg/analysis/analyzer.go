@@ -95,13 +95,13 @@ func reverse(src []byte) []byte {
 	return dst
 }
 
-func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bid *types.Bid) (*InvalidBid, error) {
+func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bid *types.Bid) (*types.InvalidBid, error) {
 	if bid == nil {
 		return nil, nil
 	}
 
 	if bidCtx.RelayPublicKey != bid.Message.Pubkey {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "incorrect public key from relay",
 		}, nil
 	}
@@ -112,7 +112,7 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 	}
 
 	if !validSignature {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid signature",
 		}, nil
 	}
@@ -120,7 +120,7 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 	header := bid.Message.Header
 
 	if bidCtx.ParentHash != header.ParentHash {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid parent hash",
 		}, nil
 	}
@@ -140,9 +140,9 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 			return nil, err
 		}
 		if !valid {
-			return &InvalidBid{
-				Reason: "invalid gas limit",
-				Type:   InvalidBidIgnoredPreferencesType,
+			return &types.InvalidBid{
+				Reason:   "invalid gas limit",
+				Category: types.InvalidBidIgnoredPreferencesCategory,
 			}, nil
 		}
 	}
@@ -152,7 +152,7 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 		return nil, err
 	}
 	if expectedRandomness != header.Random {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid random value",
 		}, nil
 	}
@@ -162,20 +162,20 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 		return nil, err
 	}
 	if expectedBlockNumber != header.BlockNumber {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid block number",
 		}, nil
 	}
 
 	if header.GasUsed > header.GasLimit {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "gas used is higher than gas limit",
 		}, nil
 	}
 
 	expectedTimestamp := a.clock.SlotInSeconds(bidCtx.Slot)
 	if expectedTimestamp != int64(header.Timestamp) {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid timestamp",
 		}, nil
 	}
@@ -187,7 +187,7 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 	baseFee := uint256.NewInt(0)
 	baseFee.SetBytes(reverse(header.BaseFeePerGas[:]))
 	if !expectedBaseFee.Eq(baseFee) {
-		return &InvalidBid{
+		return &types.InvalidBid{
 			Reason: "invalid base fee",
 		}, nil
 	}
@@ -195,46 +195,58 @@ func (a *Analyzer) validateBid(ctx context.Context, bidCtx *types.BidContext, bi
 	return nil, nil
 }
 
-func (a *Analyzer) processBid(ctx context.Context, event *data.BidEvent) {
-	logger := a.logger.Sugar()
+func (analyzer *Analyzer) processBid(ctx context.Context, event *data.BidEvent) {
+	logger := analyzer.logger.Sugar()
 
 	bidCtx := event.Context
 	bid := event.Bid
 
-	err := a.store.PutBid(ctx, bidCtx, bid)
+	// Store the bid.
+	// TODO consider storing earlier and only analyze the bid here / read from DB instead of
+	// getting the event from a channel.
+	err := analyzer.store.PutBid(ctx, bidCtx, bid)
 	if err != nil {
 		logger.Warnf("could not store bid: %+v", event)
 		return
 	}
 
-	result, err := a.validateBid(ctx, bidCtx, bid)
+	// Analyze the bid and return any errors.
+	bidFault, err := analyzer.validateBid(ctx, bidCtx, bid)
 	if err != nil {
 		logger.Warnf("could not validate bid with error %+v: %+v, %+v", err, bidCtx, bid)
 		return
 	}
 
+	// Store the analysis result.
+	err = analyzer.store.PutBidAnalysis(ctx, bidCtx, bidFault)
+	if err != nil {
+		logger.Warnf("could not store analysis result with error %+v: %+v, %+v", err, bidCtx, bid)
+		return
+	}
+
 	// TODO scope faults by coordinate
-	// TODO persist analysis results
+	// TODO with persistance the below in-memory store is not needed and should instead be abstracted
+	// away into the "storer"
 	relayID := bidCtx.RelayPublicKey
-	a.faultsLock.Lock()
-	faults := a.faults[relayID]
+	analyzer.faultsLock.Lock()
+	faults := analyzer.faults[relayID]
 	if bid != nil {
 		faults.Stats.TotalBids += 1
 	}
-	if result != nil {
-		switch result.Type {
-		case InvalidBidConsensusType:
+	if bidFault != nil {
+		switch bidFault.Category {
+		case types.InvalidBidConsensusCategory:
 			faults.Stats.ConsensusInvalidBids += 1
-		case InvalidBidIgnoredPreferencesType:
+		case types.InvalidBidIgnoredPreferencesCategory:
 			faults.Stats.IgnoredPreferencesBids += 1
 		default:
-			logger.Warnf("could not interpret bid analysis result: %+v, %+v", event, result)
+			logger.Warnf("could not interpret bid analysis result: %+v, %+v", event, bidFault)
 			return
 		}
 	}
-	a.faultsLock.Unlock()
-	if result != nil {
-		logger.Debugf("invalid bid: %+v, %+v", result, event)
+	analyzer.faultsLock.Unlock()
+	if bidFault != nil {
+		logger.Debugf("invalid bid: %+v, %+v", bidFault, event)
 	} else {
 		logger.Debugf("found valid bid: %+v, %+v", bidCtx, bid)
 	}
@@ -315,9 +327,9 @@ func (a *Analyzer) processAuctionTranscript(ctx context.Context, event data.Auct
 	// (claimed) Value, including fee recipient
 	// expectedFeeRecipient := registration.Message.FeeRecipient
 	// if expectedFeeRecipient != header.FeeRecipient {
-	// 	return &InvalidBid{
+	// 	return &types.InvalidBid{
 	// 		Reason: "invalid fee recipient",
-	// 		Type:   InvalidBidIgnoredPreferencesType,
+	// 		Type:   types.InvalidBidIgnoredPreferencesType,
 	// 		Context: map[string]interface{}{
 	// 			"expected fee recipient":  expectedFeeRecipient,
 	// 			"fee recipient in header": header.FeeRecipient,

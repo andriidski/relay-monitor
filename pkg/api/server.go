@@ -28,6 +28,11 @@ const (
 	// Validator metrics endpoints.
 	GetValidatorsEndpoint              = "/monitor/v1/validators"
 	GetValidatorsRegistrationsEndpoint = "/monitor/v1/validators/registrations"
+
+	// Analysis metrics endpoints.
+	GetAnalysisCount         = "/monitor/v1/analysis/count"
+	GetAnalysisCountBidValid = "/monitor/v1/analysis/count/valid"
+	GetAnalysisCountBidFault = "/monitor/v1/analysis/count/fault"
 )
 
 type Config struct {
@@ -70,6 +75,102 @@ func New(config *Config, logger *zap.Logger, analyzer *analysis.Analyzer, events
 		store:           store,
 		consensusClient: consensusClient,
 	}
+}
+
+func (s *Server) handleAnalysisFilterRequest(queryFilter *types.AnalysisQueryFilter, w http.ResponseWriter, r *http.Request) {
+	logger := s.logger.Sugar()
+
+	q := r.URL.Query()
+
+	var countFaults uint64
+
+	slots := q.Get("slots")
+	minutes := q.Get("minutes")
+
+	if slots != "" {
+		slotsValue, err := strconv.ParseUint(slots, 10, 64)
+		if err != nil {
+			logger.Errorw("error parsing query param for analysis request", "err", err, "slots", slotsValue)
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		countFaults, err = s.store.GetCountAnalysisWithinSlots(context.Background(), slotsValue, queryFilter)
+		if err != nil {
+			logger.Errorw("error executing query", "err", err)
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else if minutes != "" {
+		minutesValue, err := strconv.ParseUint(minutes, 10, 64)
+		if err != nil {
+			logger.Errorw("error parsing query param for analysis request", "err", err, "minutes", minutes)
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		duration := time.Duration(minutesValue) * time.Minute
+		countFaults, err = s.store.GetCountAnalysisWithinDuration(context.Background(), duration, queryFilter)
+		if err != nil {
+			logger.Errorw("error executing query", "err", err)
+			s.respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		logger.Errorw("incomplete request", "slots", slots, "minutes", minutes)
+		s.respondError(w, http.StatusBadRequest, "need either slots or minutes for query")
+		return
+	}
+
+	response := CountResponse{
+		Count: uint(countFaults),
+	}
+	s.respondOK(w, response)
+}
+
+func (s *Server) handleAnalysisCountBidFaultRequest(w http.ResponseWriter, r *http.Request) {
+
+	queryFilter := &types.AnalysisQueryFilter{
+		Category:   types.ValidBidCategory,
+		Comparator: "!=",
+	}
+
+	s.handleAnalysisFilterRequest(queryFilter, w, r)
+}
+
+func (s *Server) handleAnalysisCountBidValidRequest(w http.ResponseWriter, r *http.Request) {
+
+	queryFilter := &types.AnalysisQueryFilter{
+		Category:   types.ValidBidCategory,
+		Comparator: "=",
+	}
+
+	s.handleAnalysisFilterRequest(queryFilter, w, r)
+}
+
+func (s *Server) handleAnalysisCountRequest(w http.ResponseWriter, r *http.Request) {
+	logger := s.logger.Sugar()
+
+	q := r.URL.Query()
+
+	minutes := q.Get("minutes")
+
+	minutesValue, err := strconv.ParseUint(minutes, 10, 64)
+	if err != nil {
+		logger.Errorw("error parsing query param for analysis request", "err", err, "minutes", minutes)
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	duration := time.Duration(minutesValue) * time.Minute
+	countAnalysis, err := s.store.GetCountAnalysisWithinDuration(context.Background(), duration, nil)
+	if err != nil {
+		logger.Errorw("error executing query", "err", err)
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	response := CountResponse{
+		Count: uint(countAnalysis),
+	}
+	s.respondOK(w, response)
 }
 
 // `computeSpan` ensures that `startEpoch` and `endEpoch` cover a "sensible" span where:
@@ -372,6 +473,11 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc(GetValidatorsRegistrationsEndpoint, get(s.handleCountValidatorsRegistrations))
 
 	mux.HandleFunc(PostAuctionTranscriptEndpoint, post(s.handleAuctionTranscript))
+
+	mux.HandleFunc(GetAnalysisCount, get(s.handleAnalysisCountRequest))
+	mux.HandleFunc(GetAnalysisCountBidValid, get(s.handleAnalysisCountBidValidRequest))
+	mux.HandleFunc(GetAnalysisCountBidFault, get(s.handleAnalysisCountBidFaultRequest))
+
 	return http.ListenAndServe(host, mux)
 }
 
